@@ -1,0 +1,7 @@
+version: '3'
+
+tasks:
+  new:
+    desc: 生成 新项目
+    cmds:
+      - npx create-next-app@latest seo-site --typescript --tailwind --eslint
