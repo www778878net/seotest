@@ -27,7 +27,8 @@ if [ "$current_branch" = "develop" ]; then
         exit 1
     fi
 
-  
+ 
+
     # 获取 develop 分支的最后一次提交信息
     last_commit_msg=$(git log develop -1 --pretty=%B)
 
@@ -37,13 +38,12 @@ if [ "$current_branch" = "develop" ]; then
     # 提交 out 目录
     echo "Committing the 'out' directory..."
     git commit -m "Add 'out' directory from build"
-
+    # 创建标志文件，表示已处理
+    touch "$flag_file"
     # 推送 out 目录的更改
     git push origin develop
 
-    # 创建标志文件，表示已处理
-    touch "$flag_file"
-
+ 
     # 切换到 main 分支
     git checkout main
 
