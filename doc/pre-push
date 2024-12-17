@@ -27,15 +27,7 @@ if [ "$current_branch" = "develop" ]; then
         exit 1
     fi
 
-    # 生成 out 目录（假设使用 npm run export 来生成静态文件）
-    echo "Generating static output in 'out' directory..."
-    npm run export
-
-    # 如果生成失败，终止推送
-    if [ $? -ne 0 ]; then
-        echo "Export failed, aborting push."
-        exit 1
-    fi
+  
     # 获取 develop 分支的最后一次提交信息
     last_commit_msg=$(git log develop -1 --pretty=%B)
 
