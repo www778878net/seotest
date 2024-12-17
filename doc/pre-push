@@ -1,16 +1,80 @@
-#!/bin/sh
-# 在推送之前执行构建命令
-echo "Running npm run build before pushing..."
-npm run build
+#!/bin/bash
 
-# 如果构建失败，终止推送
-if [ $? -ne 0 ]; then
-  echo "Build failed, aborting push."
-  exit 1
+# 获取当前工作目录
+work_dir=$(git rev-parse --show-toplevel)
+
+# 标志文件路径
+flag_file="$work_dir/.pre-push-flag"
+
+# 获取当前分支名称
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+
+# 如果当前分支是 develop
+if [ "$current_branch" = "develop" ]; then
+    # 检查标志文件是否存在，防止重复操作
+    if [ -f "$flag_file" ]; then
+        echo "标志文件存在，跳过版本号更新和合并操作"
+        exit 0
+    fi
+
+    # 在推送之前执行构建命令
+    echo "Running npm run build before pushing..."
+    npm run build
+
+    # 如果构建失败，终止推送
+    if [ $? -ne 0 ]; then
+        echo "Build failed, aborting push."
+        exit 1
+    fi
+
+    # 生成 out 目录（假设使用 npm run export 来生成静态文件）
+    echo "Generating static output in 'out' directory..."
+    npm run export
+
+    # 如果生成失败，终止推送
+    if [ $? -ne 0 ]; then
+        echo "Export failed, aborting push."
+        exit 1
+    fi
+    # 获取 develop 分支的最后一次提交信息
+    last_commit_msg=$(git log develop -1 --pretty=%B)
+    
+    # 将 out 目录添加到 Git
+    git add out/
+
+    # 提交 out 目录
+    echo "Committing the 'out' directory..."
+    git commit -m "Add 'out' directory from build"
+
+    # 推送 out 目录的更改
+    git push origin develop
+
+    # 创建标志文件，表示已处理
+    touch "$flag_file"
+
+    # 切换到 main 分支
+    git checkout main
+
+
+
+    # 合并 develop 到 main 分支，使用 --squash 合并
+    echo "Squashing and merging develop branch into main..."
+    git merge --squash develop
+
+    # 提交合并
+    echo "Committing merge changes..."
+    git commit -m "$last_commit_msg"
+
+    # 推送到 main 分支
+    git push origin main
+
+    # 删除标志文件
+    rm "$flag_file"
+
+# 如果当前分支是 main
+elif [ "$current_branch" = "main" ]; then
+    echo "当前分支是 main，不需要操作。"
 fi
 
-git add .
-git commit -m "Bump version to "
-# git push origin main
 # 继续执行推送
 exit 0

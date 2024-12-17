@@ -1,0 +1,136 @@
+#!/bin/bash
+
+# 获取当前工作目录
+work_dir=$(git rev-parse --show-toplevel)
+
+# 获取远程仓库地址
+remote_repo=$(git config --get remote.origin.url)
+
+# 获取当前分支
+current_branch=$(git symbolic-ref --short HEAD)
+
+# 获取操作人
+operator=$(git config user.name) 
+
+# 标志文件路径
+flag_file="$work_dir/.pre-push-flag"
+
+# 打印获取到的信息
+echo "Post-push 钩子开始执行"
+echo "工作目录: $work_dir"
+echo "远程仓库: $remote_repo"
+echo "当前分支: $current_branch"
+echo "操作人: $operator"
+
+cd "$work_dir"
+
+# 如果当前分支是 main，则切换回 develop 分支
+if [ "$current_branch" = "main" ]; then
+   # 检查标志文件是否存在
+    if [ -f "$flag_file" ]; then
+        echo "标志文件存在，跳过版本号更新和合并操作"
+        exit 0
+    fi
+
+    echo "当前分支是 main,切换回 develop 分支..."
+    # 编译 TypeScript 代码
+    npx tsc
+    if [ $? -ne 0 ]; then
+      echo "TypeScript 编译失败，推送已中止"
+      exit 1
+    fi
+    
+    echo "运行测试...  "
+    npm test
+    if [ $? -ne 0 ]; then
+        echo "测试失败，推送已中止  "
+        exit 1
+    fi
+    echo "测试通过成功  "
+
+
+    
+    # 使用 npm version patch 增加版本号
+    npm version patch
+
+    # 读取当前版本号
+    NEW_VERSION=$(grep -oP '(?<="version": ")[^"]*' package.json)
+
+
+    # 输出新的版本号
+    echo $NEW_VERSION
+
+
+
+    # 构建 Docker 镜像
+    docker build -t "crpi-3zr415nakxg4qr8l.cn-hangzhou.personal.cr.aliyuncs.com/7788soft/koatest:$NEW_VERSION" -t "crpi-3zr415nakxg4qr8l.cn-hangzhou.personal.cr.aliyuncs.com/7788soft/koatest:latest" -f Dockerfile .
+
+    # 推送 Docker 镜像
+    docker push "crpi-3zr415nakxg4qr8l.cn-hangzhou.personal.cr.aliyuncs.com/7788soft/koatest:$NEW_VERSION"
+    docker push "crpi-3zr415nakxg4qr8l.cn-hangzhou.personal.cr.aliyuncs.com/7788soft/koatest:latest"
+
+    # 更新 Kubernetes 中的应用
+    echo "通过 SSH 连接到远程 Kubernetes 管理机并更新应用..."
+    ssh -i D:/tmp7788doc/BaiduSyncdisk/1.imp/keys/7788/202410 -p 2213 root@192.168.31.181 << EOF
+kubectl set image deployment/koatest-office koatest=crpi-3zr415nakxg4qr8l.cn-hangzhou.personal.cr.aliyuncs.com/7788soft/koatest:$NEW_VERSION
+if [ \$? -ne 0 ]; then
+  echo "更新 Kubernetes 应用失败"
+  exit 1
+fi
+echo "Kubernetes office应用更新成功"
+EOF
+    ssh -i D:/tmp7788doc/BaiduSyncdisk/1.imp/keys/7788/202410  root@120.55.61.95 << EOF
+kubectl set image deployment/koatest-app koatest=crpi-3zr415nakxg4qr8l.cn-hangzhou.personal.cr.aliyuncs.com/7788soft/koatest:$NEW_VERSION
+if [ \$? -ne 0 ]; then
+  echo "更新 Kubernetes 应用失败"
+  exit 1
+fi
+echo "Kubernetes ali应用更新成功"
+EOF
+    if [ $? -ne 0 ]; then
+        echo "SSH 连接或命令执行失败，推送已中止"
+        exit 1
+    fi
+
+    echo "Kubernetes 应用更新成功"
+
+        # 创建标志文件
+    touch "$flag_file"
+    
+    
+    echo "切换到 develop 分支并合并 main...  "
+    git checkout develop 
+    git merge -X theirs main
+    if [ $? -ne 0 ]; then
+        echo "切换到 develop 分支并合并 main 失败，推送已中止  "
+        exit 1
+    fi
+    echo "切换到 develop 分支并合并 main 成功完成  "
+
+        # 删除标志文件
+    rm "$flag_file"
+# 如果当前分支是 develop，则切换到 main 分支
+elif [ "$current_branch" = "develop" ]; then
+    echo "当前分支是 develop。切换到 main 分支..."
+  
+    git checkout main
+    #git pull origin main
+
+    echo "获取 develop 分支最后一次提交信息...  "
+    last_commit_msg=$(git log develop -1 --pretty=%B)
+
+    echo "合并 develop 分支，使用 --squash 选项...  "
+    git merge --squash develop
+
+    echo "提交更改... "
+    git commit -m "$last_commit_msg"
+
+    echo "合并到 main 成功完成 "
+fi
+
+# 在这里可以添加其他需要在 push 后执行的操作
+# 例如：发送通知、更新文档、触发构建等
+
+echo "Post-push 钩子执行完成"
+
+#bash ./hooks/pre-push
