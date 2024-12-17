@@ -11,6 +11,6 @@ fi
 
 git add .
 git commit -m "Bump version to "
-git push origin main
+# git push origin main
 # 继续执行推送
 exit 0
