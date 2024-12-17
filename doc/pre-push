@@ -8,7 +8,7 @@ echo "工作目录: $work_dir"
 flag_file="$work_dir/.pre-push-flag"
 echo "标志文件路径: $flag_file"
 
-# 获取当前分支名称1 
+# 获取当前分支名称9
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 echo "当前分支: $current_branch"
 
