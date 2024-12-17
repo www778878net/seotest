@@ -9,5 +9,8 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
+git add .
+git commit -m "Bump version to "
+git push origin main
 # 继续执行推送
 exit 0

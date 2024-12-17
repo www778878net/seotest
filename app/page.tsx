@@ -1,5 +1,6 @@
 import React from 'react';
-
+import Link from 'next/link';
+import Image from 'next/image';
 const ArticlePage = () => {
   return (
     <div className="min-h-screen bg-gray-100">
@@ -7,10 +8,10 @@ const ArticlePage = () => {
       <div className="flex justify-between items-center p-4 bg-white shadow-md">
         <div className="flex space-x-4">
           <button className="text-gray-700">
-            <img src="/icons/search.svg" alt="Search" className="w-6 h-6" />
+            <Image src="/icons/search.svg" alt="Search" className="w-6 h-6" />
           </button>
           <button className="text-gray-700">
-            <img src="/icons/wechat.svg" alt="WeChat" className="w-6 h-6" />
+            <Image src="/icons/wechat.svg" alt="WeChat" className="w-6 h-6" />
           </button>
         </div>
       </div>
@@ -18,11 +19,11 @@ const ArticlePage = () => {
       {/* 导航栏 */}
       <nav className="bg-gray-800 text-white">
         <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between">
-          <a href="/" className="text-lg font-semibold hover:text-gray-400">
+          <Link href="/" className="text-lg font-semibold hover:text-gray-400">
             首页
-          </a>
+          </Link>
           <ul className="flex space-x-6">
-            <li><a href="/menu" className="hover:text-gray-400">菜单</a></li>
+            <li><Link href="/menu" className="hover:text-gray-400">菜单</Link></li>
           </ul>
         </div>
       </nav>
@@ -30,8 +31,8 @@ const ArticlePage = () => {
       {/* 当前位置 */}
       <div className="bg-gray-200 py-2 text-sm text-gray-600">
         <div className="max-w-7xl mx-auto px-6">
-          <a href="/" className="hover:text-blue-600">首页</a> &gt; 
-          <a href="/fish-pond-knowledge" className="hover:text-blue-600">鱼塘知识</a> &gt; 
+          <Link href="/" className="hover:text-blue-600">首页</Link> &gt; 
+          <Link href="/fish-pond-knowledge" className="hover:text-blue-600">鱼塘知识</Link> &gt; 
           清塘方法
         </div>
       </div>
@@ -114,13 +115,13 @@ const ArticlePage = () => {
             <h3 className="font-semibold text-gray-800 mb-2">分享</h3>
             <div className="flex space-x-4">
               <button className="text-gray-700">
-                <img src="/icons/facebook.svg" alt="Facebook" className="w-6 h-6" />
+                <Image src="/icons/facebook.svg" alt="Facebook" className="w-6 h-6" />
               </button>
               <button className="text-gray-700">
-                <img src="/icons/twitter.svg" alt="Twitter" className="w-6 h-6" />
+                <Image src="/icons/twitter.svg" alt="Twitter" className="w-6 h-6" />
               </button>
               <button className="text-gray-700">
-                <img src="/icons/wechat.svg" alt="WeChat" className="w-6 h-6" />
+                <Image src="/icons/wechat.svg" alt="WeChat" className="w-6 h-6" />
               </button>
             </div>
           </div>
@@ -130,13 +131,13 @@ const ArticlePage = () => {
             <h3 className="font-semibold text-gray-800 mb-4">相关文章</h3>
             <ul>
               <li className="mb-2">
-                <a href="/article-a" className="text-blue-600 hover:underline">如何科学养殖鱼虾</a>
+                <Link href="/article-a" className="text-blue-600 hover:underline">如何科学养殖鱼虾</Link>
               </li>
               <li className="mb-2">
-                <a href="/article-b" className="text-blue-600 hover:underline">鱼塘管理与水质控制</a>
+                <Link href="/article-b" className="text-blue-600 hover:underline">鱼塘管理与水质控制</Link>
               </li>
               <li className="mb-2">
-                <a href="/article-c" className="text-blue-600 hover:underline">如何处理鱼塘中的疾病</a>
+                <Link href="/article-c" className="text-blue-600 hover:underline">如何处理鱼塘中的疾病</Link>
               </li>
             </ul>
           </div>
