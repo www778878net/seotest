@@ -20,7 +20,7 @@ const ArticlePage = () => {
       <nav className="bg-gray-800 text-white">
         <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between">
           <Link href="/" className="text-lg font-semibold hover:text-gray-400">
-            首页
+            首页2
           </Link>
           <ul className="flex space-x-6">
             <li><Link href="/menu" className="hover:text-gray-400">菜单</Link></li>
