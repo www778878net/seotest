@@ -3,7 +3,7 @@
 # 获取当前工作目录
 work_dir=$(git rev-parse --show-toplevel)
 
-# 标志文件路径
+# 标志文件路径 
 flag_file="$work_dir/.pre-push-flag"
 
 # 获取当前分支名称
@@ -38,7 +38,7 @@ if [ "$current_branch" = "develop" ]; then
     fi
     # 获取 develop 分支的最后一次提交信息
     last_commit_msg=$(git log develop -1 --pretty=%B)
-    
+
     # 将 out 目录添加到 Git
     git add out/
 
