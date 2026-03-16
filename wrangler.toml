@@ -1,0 +1,13 @@
+name = "seotest"
+type = "javascript"
+build = "npm run build"
+
+[site]
+bucket = ".svelte-kit/cloudflare/public"
+entry-point = "workers-site"
+
+[build]
+command = "npm run build"
+
+[env.production]
+workers_dev = false
