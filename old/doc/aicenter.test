@@ -1,0 +1,1734 @@
+﻿using SteamKit2;
+using System;
+using System.Data;
+using System.Reflection;
+using zhaomin;
+
+
+namespace zhaomin
+{
+  enum SellKind
+  {
+    steam,
+    buff,
+
+    unknown,
+  }
+  /// <summary>
+  /// 计算交易控制中心
+  /// </summary>
+  public class AiCenter : WinBase
+  {
+
+    private const int maxbuffbuynum = 90;//BUFF求购最大交易个数
+    private const int maxSteamBuynum = 300;//steam求购最大交易个数
+
+    public SteamUp steamup { get; private set; }//steam上架
+    public AiOrder aiorder { get; private set; }//添加命令
+    public AiCenter()
+    {
+      steamup = new SteamUp() { aicenter = this };
+      aiorder = new AiOrder() { aicenter = this };
+    }
+    /// <summary>
+    /// ai中心
+    /// </summary>
+    public void Go(int _count = 20)
+    {
+      GoBase(_count);
+    }
+
+    /// <summary>
+    /// 计算过程
+    /// </summary>
+    private void GoBase(int _count = 20)
+    {
+
+      UpInfo up;
+      //获取所有用户 计算求购需要的东西
+      DataTable? dtusers = null;
+      int startTime = System.Environment.TickCount;
+      for (int j = 0; j < _count; j++)
+      {
+
+        #region 获取一个扫价成功添加的队列
+        string hashname = GetHashname();
+                
+        if (hashname == "")
+        {
+          ThreadHelper.Sleep(800);//本来扫描就要等的
+          continue;
+          //return;
+        }
+        if (hashname == "next") continue;//这东西不交易的 姓名标签啥的 少少几个
+        #endregion
+
+        #region 获取这物品相关的信息并加工
+        if (dtusers == null)
+          dtusers = GetUsers();
+        //需要的基础表 库存表
+        DataRow r;
+        string buffid, buffkind;
+        double winmoney, buffsell, buffbuy, steambuy;//基础参数获取
+        GetRowPar(hashname, out r, out buffid, out buffkind, out winmoney, out buffsell, out buffbuy, out steambuy);
+        double max3month, bmax3month;//三个月最高价获取
+        GetMax3month(hashname, out max3month, out bmax3month);
+        #endregion
+
+        #region 获取B和S最后一次购买价做为成本价 计算Steamsell  
+        double buyrmb = GetLastBuyrmb(r, buffbuy, steambuy);
+        //buff主要是计算磨损价格 先不管
+        #endregion
+
+        #region 取本物品库存相关信息
+        DataTable dtStore = GetStore(hashname);
+        #endregion
+
+        //设置4个user 应该放到每个步骤去 顺便转货
+        bool isuserchange = false;
+
+        #region 卖价计算 steam可卖二三档 后面再加上BUFF磨损
+        double steamsell, bper, sper;
+        int steamselllv;
+        buffsell = GetSteamSellNew(r, buffsell, buyrmb, out steamsell, out bper, out sper, out steamselllv, ref isuserchange);
+        #endregion
+
+        #region 交易算法
+
+        //AIcenterSteamdown(hashname, r, buyrmb, dtStore, dtusers
+        //    , steamsell, steamselllv, bper, sper, ref isuserchange);
+        //AIcenterSteamUp(hashname, r, buyrmb, dtStore, dtusers
+        //    , steamsell, steamselllv, bper, sper, winmoney, max3month, bmax3month, ref isuserchange);
+        AIcenterUp(buffid, buffkind, hashname, r, buyrmb, dtStore, dtusers
+           , buffsell, steamsell, steamselllv, bper, sper, winmoney, max3month, bmax3month, ref isuserchange);
+
+        if (buffid != "" && buffkind != "csgo_type_weaponcase")//武器箱和胶囊不让卖{
+        {
+          //AIcenterBuffUp(hashname, r, buyrmb, dtStore, dtusers
+          //       , steamsell, steamselllv, bper, sper, winmoney
+          //       , buffsell, max3month, bmax3month, buffid, ref isuserchange);
+          AicenterBuffBuy(hashname, r, buyrmb, dtStore, dtusers
+                 , steamsell, steamselllv, bper, sper, winmoney
+                 , buffsell, max3month, bmax3month, buffid, ref isuserchange);
+        }
+        AicenterSteamBuy(hashname, r, buyrmb, dtStore, dtusers
+                   , steamsell, steamselllv, bper, sper, winmoney
+                   , buffsell, max3month, bmax3month, buffid, ref isuserchange);
+
+        #endregion
+
+        #region 更新4个user
+        if (isuserchange)
+        {
+          up = GetUpInfo();
+          up.Midpk = Convert.ToInt32(r["idpkbasic"]);
+          up.setPar(r["ssuser"].ToString(), r["sbuser"].ToString()
+              , r["bsuser"].ToString(), r["bbuser"].ToString(), steamsell.ToString(), buffsell.ToString());
+          string tmp = ApiHelper.api.GetStr("api7819/trade/trade_basic/muser", up);
+        }
+        rpg.s7.Set("Aicenterhashname", "");
+        #endregion
+
+      }
+
+      int endTime = System.Environment.TickCount;
+      int runTime = endTime - startTime;
+      Console.WriteLine("耗时:" + runTime);
+    }
+
+    private void AIcenterUp(string buffid, string buffkind, string hashname, DataRow r, double buyrmb, DataTable dtStore, DataTable dtusers, double buffsell, double steamsell, int steamselllv, double bper, double sper, double winmoney, double max3month, double bmax3month, ref bool isuserchange)
+    {
+      //先识别预设置S B卖价 如果我的价格和当前最低一样 就我的价格不然就-1
+      double steamsellSet = 0;// 
+      double buffsellSet = 0;
+      //重新设置卖价 我是最前面就不减 否则就-0.01
+      resetSellSet(buyrmb, dtStore, ref buffsell, steamsell, ref steamsellSet, ref buffsellSet);
+
+      #region 计算B SUSER
+      string gameid = r["gameid"].ToString();
+      DataView dvstore = new DataView(dtStore);
+      DataView dvuser = new DataView(dtusers);
+      int index, length = dvstore.Count;
+      string tranuserS = "", tranuserB = "";//转货目标 只找一次本次就一直用它
+      string bsuser = r["bsuser"].ToString();//bsuser ssuser基本没用了
+
+      SellKind sellkind = SellKind.unknown;
+      //先决定上哪边 B还是S
+      if (buffid != "" && buffkind != "csgo_type_weaponcase")//武器箱和胶囊不让卖{                
+      {
+        if (bsuser == "" && dtStore.Rows.Count >= 1)
+        {
+          SetBsuser(bsuser, dtusers, r, dtStore, hashname, ref isuserchange);
+          bsuser = r["bsuser"].ToString();
+        }
+      }
+      else
+        sellkind = SellKind.steam;
+
+      string ssuser = r["ssuser"].ToString();
+      if (ssuser == "" && dtStore.Rows.Count >= 1)
+      {
+        SetSsuser(ssuser, r, dtStore, hashname, ref isuserchange);
+        ssuser = r["ssuser"].ToString();
+      }
+      #endregion
+
+      for (int i = 0; i < length; i++)
+      {
+        #region 取值
+        string state = dvstore[i]["state"].ToString();
+        string suser = dvstore[i]["suser"].ToString();
+        string assetid = dvstore[i]["assetid"].ToString();
+        string steamupdate = dvstore[i]["steamupdate"].ToString();
+        string steamorder = dvstore[i]["steamorder"].ToString();
+        if (steamupdate == "1911-11-11") continue;
+
+        string bufforderid = dvstore[i]["sell_order_id"].ToString();
+        double myvalb = Convert.ToDouble(dvstore[i]["sell_order_price"]);//当前BUFF售价                
+        double myvals = Convert.ToDouble(dvstore[i]["steam_sellprice"]);
+        string classid = dvstore[i]["classid"].ToString();
+        string instanceid = dvstore[i]["instanceid"].ToString();
+        string marketable = dvstore[i]["marketable"].ToString();
+        if (marketable != "1") continue;
+
+        dvuser.RowFilter = "user='" + suser + "'";
+        string userkind = dvuser[0]["kind"].ToString();
+        string usergameid = dvuser[0]["gameid"].ToString();
+        double totolmoney = Convert.ToDouble(dvuser[0]["totolmoney"]);
+
+        if (gameid != "730")//730所有号都可以搞 且优先(看怎么个优先法)
+        {
+          index = usergameid.IndexOf("~" + gameid + "~");
+          if (index == -1)//这个号不跑这游戏
+          {
+            TranToSteam(gameid, hashname, dtusers, steamsell, steamselllv, steamorder, ref tranuserS, suser, state, assetid);
+            continue;
+          }
+        }
+
+
+        #endregion
+
+        #region 判断转货
+        if (sellkind == SellKind.unknown)
+        {
+          double bperadd = 2;
+
+          if (userkind == "steam")
+          {
+            if (sper > bper + bperadd)
+            {
+              sellkind = SellKind.steam;
+            }
+            else
+            {
+              sellkind = SellKind.buff;
+            }
+          }
+          else if (userkind == "buff")
+          {
+            if (sper > bper + bperadd)
+            {
+              if (sper < bper + bperadd + 1)
+              {
+                sellkind = SellKind.buff;
+              }
+              else
+              {
+                sellkind = SellKind.steam;
+              }
+            }
+            else
+            {
+              sellkind = SellKind.buff;
+            }
+          }
+        }
+        //再判断要不要转货
+        //暂定:现在如果转不了 S有利润可以上架先卖 后面封号再取消 
+        if (sellkind == SellKind.buff && userkind == "steam" && state == "3")
+        {
+          TranToBuff(hashname, dtusers, steamsell, steamselllv, steamorder, ref tranuserB, state, suser, assetid);
+          continue;
+        }
+        if (sellkind == SellKind.steam && userkind == "buff" && steamsell >= 10000 && state == "3")
+        {
+          TranToSteam(gameid, hashname, dtusers, steamsell, steamselllv, steamorder, ref tranuserS, suser, state, assetid);
+          continue;
+        }
+
+        #endregion
+
+
+        if (sellkind == SellKind.buff && userkind == "steam" && state != "3")
+        {
+          if (sper < 1) continue;
+          steamup.AicenterUpSteam(gameid, myvals, hashname, buyrmb, dtStore, steamsell, steamselllv, sper, winmoney, max3month, bmax3month, steamsellSet, dvstore, i, suser, steamorder, bufforderid, dtusers, state, ref tranuserS, totolmoney);
+          continue;
+        }
+        //暂定:要转STEAM的但是现在状态1 S有利润可以上架先卖 后面封号再取消 
+        if (sellkind == SellKind.steam)
+        {
+          steamup.AicenterUpSteam(gameid, myvals, hashname, buyrmb, dtStore, steamsell, steamselllv, sper, winmoney, max3month, bmax3month, steamsellSet, dvstore, i, suser, steamorder, bufforderid, dtusers, state, ref tranuserS, totolmoney);
+          continue;
+        }
+
+        if (sellkind == SellKind.buff)
+        {
+          AiCenterUpBuff(buffid, hashname, buyrmb, dtStore, ref buffsell, steamselllv, bper, winmoney, max3month, bmax3month, buffsellSet, state, suser, assetid, steamorder, userkind, bufforderid, myvalb, classid, instanceid);
+          continue;
+        }
+      }
+    }
+
+    private void AiCenterUpBuff(string buffid, string hashname, double buyrmb, DataTable dtStore, ref double buffsell, int steamselllv, double bper, double winmoney, double max3month, double bmax3month, double buffsellSet, string state, string suser, string assetid, string steamorder, string userkind, string bufforderid, double myvalb, string classid, string instanceid)
+    {
+      #region 不上架判断
+      if (state != "3") return;
+      if (isnotautoItem(hashname)) return;//这应该也不可能了
+      if (steamorder != "")
+      {
+        aiorder.AiOrderDoingSdown(suser, hashname, steamorder, " bup  lv:" + steamselllv);
+        return;
+      }
+      if (userkind == "steam")
+        return;//这里也不可能 上面做了判断
+      if (buffsell >= buyrmb * 2 && buyrmb > 300)//后面改下利润要求低点
+        buffsell = buyrmb * 2;
+      //为什么这里不写myval<=buffsell???
+      //这是为了防止第二三挡杀价的退出了 我可以自动卖高点???
+      if (myvalb > 0 && myvalb * 100 == buffsell)
+        return;
+      //应该是最新价格没扫描过来
+      if (buffsell / 100 > myvalb && buffsell / 100 - myvalb <= 0.011)
+        return;
+      if (buyrmb == 0)
+        return;//防误但应该不太可能了
+
+      if (bper < 0)//如果为负 只有到了高位区间才上
+      {
+        if (buffsell < bmax3month || buffsell < max3month * usdsteam)
+          return;
+      }
+      //负10个之内都可以等 10个点以上的 才卖一个收一个
+      if (bper < 0 && bper >= -10)
+        return;
+      //如果小于成本 看当前应该持有几个
+      if (bper < -10 && (bufforderid == "" || bufforderid == "null,"))
+      {
+        double winper = winmoney / (buffsell * 0.975) * 100;
+        int buynum = SetBuynum;
+        if (winper > 0)
+          buynum = Convert.ToInt32(winper / 15) + SetBuynum;//故意这样的 这样收的收多点  
+        if (buynum > 3) buynum = 3;
+        DataView dvtmp = new DataView(dtStore);
+        dvtmp.RowFilter = "sell_order_income='0' and steam_sellprice='0'";
+        if (dvtmp.Count <= buynum)
+          return;
+        dvtmp[0]["sell_order_income"] = buffsell;//把这个库存-1 改这个sell_order_income很巧 别乱动
+      }
+      double income = Math.Floor((buffsellSet * 100 - 1) * 0.975) / 100;
+      if (income <= buyrmb * 0.2) //防误上架 && buycb >= 5
+      {
+        Log.AddLog22("buff上架异常低于成本  " + hashname + " "
+            + income.ToString() + " " + buyrmb.ToString()
+            , "aicenterbuffup", 90, hashname, rpg.steamuser);
+        return;
+      }
+
+
+      #endregion
+      //直接可以改价 这里不用下架
+      //if (myvalb * 100 > buffsell)
+      //{
+      //    if (bufforderid != "") AiOrderDoingBdown(suser, hashname, bufforderid, " myvalb * 100 > buffsell  slv:" + steamselllv);
+      //    return;
+      //}
+      //if (bufforderid != "")
+      //    return;
+      //这里只要下指令
+
+      string par2 = bufforderid + "^" + buffid + "^" + classid + "^" + instanceid;
+      AiOrderDoingBup(suser, hashname, buffsellSet, assetid, par2, " buffsell:" + buffsell.ToString());
+    }
+
+
+    /// <summary>
+    ///  重新设置卖价 
+    /// </summary>
+    /// <param name="buyrmb"></param>
+    /// <param name="dtStore"></param>
+    /// <param name="buffsell"></param>
+    /// <param name="steamsell"></param>
+    /// <param name="steamsellSet"></param>
+    /// <param name="buffsellSet"></param>
+    private void resetSellSet(double buyrmb, DataTable dtStore, ref double buffsell, double steamsell, ref double steamsellSet, ref double buffsellSet)
+    {
+      if (buffsell >= buyrmb * 2 && buyrmb > 300)//利润不用太高 这里还可调减
+        buffsell = buyrmb * 2;
+      DataView dvstore = new DataView(dtStore);
+      int length = dvstore.Count;
+      double myvals, myvalb;
+      for (int i = 0; i < length; i++)
+      {
+        myvalb = Convert.ToDouble(dvstore[i]["sell_order_price"]);//当前BUFF售价
+        if (myvalb > 0 && myvalb * 100 == buffsell) buffsellSet = myvalb;
+        myvals = Convert.ToDouble(dvstore[i]["steam_sellprice"]);
+        if (myvals > 0 && myvals * 100 == steamsell)
+          steamsellSet = Math.Floor(steamsell * 0.87);
+      }
+      if (buffsellSet == 0) buffsellSet = (buffsell - 1) / 100;
+      if (steamsellSet == 0)//向下取整 最小为1
+      {
+        if (steamsell <= 21) steamsellSet = steamsell - 2;
+        else steamsellSet = Math.Floor(steamsell * 0.87);
+
+
+        if (steamsellSet != steamsell - 2)
+        {
+          for (int m = 0; m < 50; m++)
+          {
+            double diff = Math.Floor(steamsellSet * 0.1) + Math.Floor(steamsellSet * 0.05);
+            if (steamsell == steamsellSet + diff)
+              break;
+            else if (steamsell > steamsellSet + diff)
+            {
+              steamsellSet += 1;
+              m = 48;
+            }
+            else if (steamsell < steamsellSet + diff)
+              steamsellSet -= 1;
+          }
+        }
+      }
+    }
+
+    private double GetSteamSellNew(DataRow r, double buffsell, double buyrmb, out double steamsell, out double bper, out double sper, out int steamselllv, ref bool isuserchange)
+    {
+
+      steamsell = Convert.ToInt32(r["steamsell"].ToString());
+      double steamsell2 = Convert.ToDouble(r["steamsell2"]);
+      double steamsell3 = Convert.ToDouble(r["steamsell3"]);
+      bper = (buffsell / 100 * 0.95 - buyrmb) / buyrmb * 100;
+      if (bper == -100 && r["buffsell"].ToString() != "")
+      {
+        bper = 20;
+        buffsell = buyrmb * 120;
+        isuserchange = true;
+      }
+      sper = (steamsell / 100 * 0.87 * usdsteam - buyrmb) / buyrmb * 100;
+      int steamsellnum = Convert.ToInt32(r["steamsellnum"].ToString());
+      steamselllv = 0;
+      if (sper <= b2sper && steamsellnum < 3 && steamsell2 > steamsell * 1.01)
+      {
+        isuserchange = true;
+        steamsell = steamsell2;
+        steamsellnum = Convert.ToInt32(r["steamsellnum2"].ToString());
+        sper = (steamsell * 0.87 * usdsteam / 100 - buyrmb) / buyrmb * 100;
+        steamselllv = 1;
+
+        steamsell2 = Convert.ToDouble(r["steamsell3"]);
+        if (sper <= b2sper && steamsellnum < 3 && steamsell2 > steamsell * 1.01)
+        {
+          steamsell = steamsell2;
+          sper = (steamsell * 0.87 * usdsteam / 100 - buyrmb) / buyrmb * 100;
+          steamselllv = 2;
+        }
+      }
+
+
+      return buffsell;
+    }
+
+    private DataTable GetStore(string hashname)
+    {
+      UpInfo up = GetUpInfo();
+      up.setPar(hashname);
+      return ApiHelper.api.GetDt("api7819/trade/trade_store/getByhashname", up);
+    }
+
+    private static double GetLastBuyrmb(DataRow r, double buffbuy, double steambuy)
+    {
+      double dtmp = 0;
+      if (r["buyrmb"].ToString() != "")
+        dtmp = Convert.ToDouble(r["buyrmb"]);
+      if (dtmp == 0)//如果没有 直接以当前最高求购为准
+      {
+        dtmp = steambuy * usdsteam;
+        if (buffbuy > dtmp) dtmp = buffbuy;
+        dtmp = dtmp / 100;
+      }
+      double buyrmb = dtmp;//购买人民币
+      return buyrmb;
+    }
+
+    private static void GetMax3month(string hashname, out double max3month, out double bmax3month)
+    {
+      UpInfo up = GetUpInfo();
+      up.setPar(hashname);
+      DataTable dtAvg = ApiHelper.api.GetDt("api7819/tscan/tscan_basicavg/getOne", up);
+      max3month = 0;
+      bmax3month = 0;
+      if (dtAvg.Rows.Count >= 1)
+      {
+        max3month = Convert.ToDouble(dtAvg.Rows[0]["max3month"]);
+        bmax3month = Convert.ToDouble(dtAvg.Rows[0]["bmax3month"]);
+      }
+    }
+
+    private void GetRowPar(string hashname, out DataRow r, out string buffid, out string buffkind, out double winmoney, out double buffsell, out double buffbuy, out double steambuy)
+    {
+      string tmp = "";
+      UpInfo up = GetUpInfo();
+      up.setPar(hashname);
+      DataTable dtBasic = ApiHelper.api.GetDt("api7819/trade/trade_basic/getstart", up);
+      //len不可能等于0
+      //交易表没有的新建
+      r = dtBasic.Rows[0];
+      if (r["ssuser"] is DBNull)
+      {
+        up = GetUpInfo();
+        up.setPar("", hashname);
+        tmp = ApiHelper.api.GetStr("api7819/trade/trade_basic/mAdd", up);
+        up = GetUpInfo();
+        up.setPar(hashname);
+        dtBasic = ApiHelper.api.GetDt("api7819/trade/trade_basic/getstart", up);
+        r = dtBasic.Rows[0];
+      }
+      buffid = r["buffid"].ToString();
+
+      buffkind = r["kind"].ToString();
+      winmoney = Convert.ToDouble(r["winmoney"]);
+      buffsell = 0;
+      buffbuy = 0;
+      if (r["buffsell"].ToString() != "")
+      {
+        //要跑个程序把原来的BUFF商品全拿过来 通过steamurl取HASHname
+        buffsell = Convert.ToInt32(r["buffsell"].ToString());
+        buffbuy = Convert.ToInt32(r["buffbuy"].ToString());
+      }
+      steambuy = Convert.ToInt32(r["steambuy"].ToString());
+
+    }
+
+    private void AicenterSteamBuy(string hashname, DataRow r, double buyrmb, DataTable dtStore, DataTable dtusers
+     , double steamsell, double steamselllv, double bper, double sper, double winmoney
+        , double buffsell, double max3month, double bmax3month, string buffid, ref bool isuserchange)
+    {
+      #region 初始化变量处理
+      DataView dvstore = new DataView(dtStore);
+      //UpInfo up = GetUpInfo();
+      //up.setPar(hashname);
+      //DataTable dtsteambuy = ApiHelper.api.GetDt("api7819/trade/trade_steambuy/getByHashname", up);
+      int length = dvstore.Count, steambuynum;
+      double buffbuy = 0;
+      if (r["buffbuy"].ToString() != "")
+        buffbuy = Convert.ToDouble(r["buffbuy"].ToString());
+      double steambuy = Convert.ToDouble(r["steambuy"].ToString());
+      int sellnum = Convert.ToInt32(r["sellnum"]);
+      int onsalenum = Convert.ToInt32(r["onsalenum"]);
+
+      //double maxval = steambuy / 100;
+      double _maxvalSteam = steambuy / 100;
+      double dtmp, lastsell, steambuy2;
+      #endregion
+
+      #region 先计算利润 没利润就只下架 不用上架了
+      if (isnotautoItem(hashname))
+      {
+        AicenterSbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      if (hashname.IndexOf("Sticker%20%7C%20") == 0 && winmoney < 0)
+      {
+        AicenterSbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      if (hashname.IndexOf("Sticker%20%7C%20") == 0 && steamsell >= 10000)
+      {
+        AicenterSbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+
+
+      #region 数量
+      lastsell = Convert.ToDouble(r["lastsell"].ToString());
+      if (steamsell == 0)
+      {
+        if (lastsell > 0) steamsell = lastsell;
+        else
+        {
+          if (steambuy < 190000)
+            steamsell = steambuy * 1.4;
+          else
+            steamsell = buffsell / usdsteam;
+        }
+        if (steamsell == 0) return;//steam求购出售都没有 搞毛
+      }
+      double winper = winmoney / (steamsell / 100 * usdsteam * 0.87) * 100;
+      if (winper < -20)
+      {
+        AicenterSbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      int buynum = SetBuynum + 1;
+      if (winper > 0)
+        buynum = Convert.ToInt32(winper / 15) + SetBuynum + 1;
+
+      //大于500美金的 最少数-1 最多收2个
+      if (_maxvalSteam >= 400)
+      {
+        buynum--;
+        if (buynum > 2) buynum = 2;
+        if (buynum <= 0) buynum = 1;
+      }
+      //大于50美金的 最多收4个
+      if (_maxvalSteam >= 50 && buynum > 2)
+        buynum = 2;
+      //大于1美金的 最多收10个
+      if (_maxvalSteam >= 2 && buynum > 4)
+        buynum = 4;
+      //大于10个的 最多收10个 
+      if (buynum > 5)
+        buynum = 5;
+      if (hashname.IndexOf("Sticker%20%7C%20") == 0 && buynum >= 4)//印花最多只收5个
+        buynum = 4;
+      if (dtStore.Columns.Contains("hashname"))
+      {
+        dvstore.RowFilter = "hashname='" + hashname.Replace("'", "''") + "'";
+        if (dvstore.Count >= buynum)
+        {
+          AicenterSbuserEmpty(r, hashname, ref isuserchange);
+          return;
+        }
+        buynum -= dvstore.Count;
+      }
+      else//第一次收1个看看
+          if (winmoney == 0) buynum = 1;
+      //每次大于500的东西只收1个
+      //大于100的收2个
+      //大于50的收3个
+      //大于20的收4个
+      //最多收5个
+      if (_maxvalSteam >= 80)
+        buynum = 1;
+      else
+      {
+        if (_maxvalSteam >= 40)
+        {
+          if (buynum > 2) buynum = 2;
+        }
+        else if (_maxvalSteam >= 25)
+        {
+          if (buynum > 3) buynum = 3;
+        }
+        else if (_maxvalSteam >= 10)
+        {
+          if (buynum > 4) buynum = 4;
+        }
+        else //如果>5个 最多收5个 
+            if (buynum > 5) buynum = 5;
+      }
+      #endregion
+
+      #region 计算maxval
+      if (_maxvalSteam == 0)
+        _maxvalSteam = Math.Floor(steamsell / 2) / 100;
+      //sellmax和steamsell取低的
+      double sellmax = Convert.ToDouble(r["sellmax"]) * 100;
+      if (sellmax > steamsell)
+        sellmax = steamsell;
+      if (sellmax == 0)
+        sellmax = steambuy * 1.4;
+      //重新计算per
+      sper = (sellmax * 0.87 / 100 - _maxvalSteam) / _maxvalSteam * 100;
+      if (buffsell > sellmax * usdsteam * 0.87 * 1.3 && sellmax > 0 && sellmax < 190000)//防止价格失真
+        buffsell = sellmax * usdsteam * 0.87 * 1.3;
+      bper = (buffsell * 0.975 / 100 / usdsteam - _maxvalSteam) / _maxvalSteam * 100;
+
+      #region steambuy 下二档
+      steambuynum = Convert.ToInt32(r["steambuynum"].ToString());
+      steambuy2 = Convert.ToDouble(r["steambuy2"].ToString());
+      if (sper < 5 && steambuynum < 3 && steambuy2 <= _maxvalSteam * 100 * 0.99 && steambuy2 > 0)
+      {
+        _maxvalSteam = steambuy2 / 100;
+        sper = (sellmax * 0.87 / 100 - _maxvalSteam) / _maxvalSteam * 100;
+        steambuynum = Convert.ToInt32(r["steambuynum2"].ToString());
+        steambuy2 = Convert.ToDouble(r["steambuy3"].ToString());
+        if (sper < 5 && steambuynum < 3 && steambuy2 <= _maxvalSteam * 100 * 0.99
+            && steambuy2 > 0)
+        {
+          _maxvalSteam = steambuy2 / 100;
+          sper = (sellmax * 0.87 / 100 - _maxvalSteam) / _maxvalSteam * 100;
+        }
+      }
+
+      #endregion
+      double b2sper2 = b2sper;
+      if (bper <= -100) b2sper2 += 3;
+      if ((sper < b2sper2 && bper < s2bper) || (sellnum == 0 && onsalenum == 0) || steamsell < 20)
+      {
+        AicenterSbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      if (buffsell > 0 && _maxvalSteam >= buffsell / usdsteam / 100)//有可能超过BUFF卖价 没必要
+        _maxvalSteam = buffsell / usdsteam / 100;
+      if (_maxvalSteam >= steamsell / 100 && steamsell > 0)
+      {
+        AicenterSbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      //如果没有人收购
+      if (_maxvalSteam == 0)
+      {
+        //如果收购价大于steam卖价的2分之一 直接取求购价
+        //否则 直接以2分之一的价格 防止1分钱这种
+        if (buffbuy / usdsteam > steamsell * 0.87 / 2)
+          _maxvalSteam = buffbuy / 100 / usdsteam;
+        else
+          _maxvalSteam = steamsell * 0.87 / 2 / 100;
+      }
+      //重新收购
+      double lastmaxval = _maxvalSteam;
+      _maxvalSteam = Math.Round(_maxvalSteam * 100 + 1) / 100;
+      #endregion
+
+      if (max3month != 0)
+      {
+        dtmp = _maxvalSteam * 100;
+        if ((bmax3month - dtmp) / usdsteam / dtmp * 100 < b2sper
+              && (max3month - dtmp) / dtmp * 100 < b2sper)
+        {
+          AicenterSbuserEmpty(r, hashname, ref isuserchange);
+          return;
+        }
+      }
+
+      if (lastsell > 0 && _maxvalSteam > lastsell * 1.1 / usdsteam)//收购价不超过最后出售过的价
+      {
+        AicenterSbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      //三个月内无成交 利率必须30%
+      if (sper < 30 && sellnum == 0)
+      {
+        //取消收购
+        AicenterSbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      #endregion
+
+      #region 可以求购 判断改价还是求购
+      AicenterSteamBuyUp(buynum, dtStore, dtusers, r, _maxvalSteam, lastmaxval, ref isuserchange);
+      #endregion
+    }
+
+    private void AicenterSteamBuyUp(int buynum, DataTable dtStore, DataTable dtusers, DataRow r, double newval, double maxval, ref bool isuserchange)
+    {
+      #region 先处理第一次为空的情况
+      string hashname = r["hashname"].ToString();
+      UpInfo up = GetUpInfo();
+      up.setPar(hashname);
+      DataTable dtsteambuy = ApiHelper.api.GetDt("api7819/trade/trade_steambuy/getByHashname", up);
+      string sbuser = r["sbuser"].ToString(), tmp;
+      if (sbuser == "" && dtsteambuy.Rows.Count >= 1)
+      {
+        SetSbuser(false, buynum, newval, dtusers, dtStore, dtsteambuy, r, ref sbuser, ref isuserchange);
+        sbuser = r["sbuser"].ToString();
+      }
+      #endregion
+
+      #region 如果有上架中的 改价或直接退
+      DataView dvUser = new DataView(dtusers);
+      string gameid = r["gameid"].ToString();
+      DataView dvSteambuy = new DataView(dtsteambuy);
+      if (dtsteambuy.Rows.Count >= 1 && sbuser != "")
+        dvSteambuy.RowFilter = "`user`='" + sbuser + "'";
+      int length = dvSteambuy.Count;
+      double myval, steammoney;
+      for (int i = 0; i < length; i++)
+      {
+        myval = Convert.ToDouble(dvSteambuy[i]["buyval"]);
+        if (myval == maxval) return;
+        //steam求购不用太频繁改价
+        if (maxval - myval <= 0.03) return;
+        if (sbuser == "") return;
+        //如果这个号安排的有点多 直接下架 重新安排bsuser               
+        dvUser.RowFilter = "`user`='" + sbuser + "'";
+        int steambuynum = Convert.ToInt32(dvUser[0]["steambuynum"]);
+        steammoney = Convert.ToDouble(dvUser[0]["steammoney"]);
+        if (newval > steammoney) break;
+        //重新安排sbuser即可(会自动下架)
+        if (steambuynum >= maxSteamBuynum * 0.9 && newval < steammoney / 10)
+          break;
+
+        string orderid = dvSteambuy[i]["orderid"].ToString();
+        //改价
+        up = GetUpInfo();
+        up.setPar(sbuser, hashname, "sbuyChange", myval + " change " + newval.ToString());
+        tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+        up = new UpInfo();
+        up.setPar(sbuser, "sbuyChange", hashname, ""
+            , newval.ToString(), buynum.ToString(), gameid
+            , orderid, "", "0");
+        tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+        //return;
+      }
+      #endregion
+
+      #region 上架求购
+      SetSbuser(true, buynum, newval, dtusers, dtStore, dtsteambuy, r, ref sbuser, ref isuserchange);
+      if (sbuser == "") return;
+
+      #region 减数量
+      dvUser.RowFilter = "`user`='" + sbuser + "'";
+      steammoney = Convert.ToDouble(dvUser[0]["steammoney"]);
+      for (int i = buynum; i >= 1; i--)
+      {
+        if (steammoney > buynum * newval) break;
+        buynum--;
+      }
+      #endregion
+      up = GetUpInfo();
+      up.setPar(sbuser, hashname, "sbuyup", newval.ToString() + " s:" + r["steamsell"].ToString() + " b:" + r["buffsell"].ToString());
+      tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+      up = new UpInfo();
+      up.setPar(sbuser, "sbuyup", hashname, ""
+          , newval.ToString(), buynum.ToString(), gameid
+          , "", "", (newval * buynum).ToString());
+      tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+      return;
+      #endregion
+
+
+    }
+
+    /// <summary>
+    /// 没有求购条件 只要设置Bs 客户端去下架
+    /// </summary>
+    /// <param name="hashname"></param>
+    private void AicenterSbuserEmpty(DataRow r, string hashname, ref bool isuserchange)
+    {
+      string sbuser = r["sbuser"].ToString();
+      if (sbuser == "") return;
+      //设置sbUSER=空 然后扫描求购时发现不是我处理这东西的 就下架求购
+      r["sbuser"] = "";
+      isuserchange = true;
+      UpInfo up = GetUpInfo();
+      up.setPar(sbuser, hashname, "sbuser", sbuser + " changeto empty");
+      string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+    }
+    private void SetSbuser(bool _isClear, int buynum, double newval, DataTable dtusers, DataTable dtStore, DataTable dtsteambuy, DataRow r, ref string sbuser, ref bool isuserchange)
+    {
+      string sbuserNouse = "";//
+      if (_isClear && sbuser != "")//先清除原来的bbuser
+      {
+        sbuserNouse = sbuser;
+        sbuser = "";
+        isuserchange = true;
+        r["sbuser"] = "";
+      }
+      string snew = "", tmp;
+
+      #region 如果仓库里有这个东西 且有空额 优先安排         
+      DataView dvUser = new DataView(dtusers);
+      DataView dvStore = new DataView(dtStore);
+      if (dtStore.Rows.Count >= 1)
+        dvStore.RowFilter = "suser<>'" + sbuserNouse + "'";
+      int length = dvStore.Count;
+      if (length >= 1)
+      {
+        for (int i = 0; i < length; i++)
+        {
+          tmp = dvStore[i]["suser"].ToString();
+          dvUser.RowFilter = "`user`='" + tmp + "'";
+          double steammoney = Convert.ToDouble(dvUser[0]["steammoney"]);
+          if (newval >= steammoney) return;
+          double steamLimit = Convert.ToDouble(dvUser[0]["SteamLimit"]);
+          double SteamBuyMinMoney = Convert.ToDouble(dvUser[0]["SteamBuyMinMoney"]);
+          if (newval < SteamBuyMinMoney) continue;//必须大于最小收购单位
+          if (newval > steamLimit) continue;//看有没有空额 
+          snew = tmp;
+          dvUser[0]["steamLimit"] = Convert.ToDouble(dvUser[0]["steamLimit"])
+              - newval * buynum;
+          dvUser[0]["ordersbuyup"] = Convert.ToInt32(dvUser[0]["ordersbuyup"]) + 1;
+          break;
+        }
+        if (snew != "")
+        {
+          isuserchange = true;
+          //snew = dvStore[0]["suser"].ToString();
+          sbuser = snew;
+          r["sbuser"] = sbuser;
+          return;
+        }
+      }
+      #endregion
+
+      #region 如果求购里面有 直接可以返回了
+      if (!_isClear)
+      {
+        if (dtsteambuy.Rows.Count >= 1)
+        {
+          sbuser = dtsteambuy.Rows[0]["user"].ToString();
+          isuserchange = true;
+          r["sbuser"] = sbuser;
+          return;
+        }
+        //DataView dvbuy = new DataView(dtsteambuy);
+        //if (dtsteambuy.Rows.Count >= 1)
+        //    dvbuy.RowFilter = "user='" + sbuser + "'";
+        //if (dvbuy.Count >= 1) return;
+      }
+      #endregion
+
+      #region 根据余下的额度顺序安排
+      dvUser.RowFilter = "ordersbuyup<5";
+      dvUser.Sort = "steamLimit desc";
+      length = dvUser.Count;
+      string buffid = r["buffid"].ToString();
+      string gameid = r["gameid"].ToString();
+      int index;
+      for (int i = 0; i < length; i++)
+      {
+        if (gameid != "730")//730所有号都可以搞 且优先(看怎么个优先法)
+        {
+          index = dvUser[i]["gameid"].ToString().IndexOf("~" + gameid + "~");
+          if (index == -1) continue;
+        }
+        //搞BUFF的号不求购其它的东西
+        if (buffid == "" && dvUser[i]["cookiebuff"].ToString().Trim() != "") continue;
+        double steammoney = Convert.ToDouble(dvUser[i]["steammoney"]);
+        if (newval >= steammoney) continue;//看新价格有否超出buff钱数 
+
+        double SteamLimit = Convert.ToDouble(dvUser[i]["SteamLimit"]);
+        double SteamBuyMinMoney = Convert.ToDouble(dvUser[i]["SteamBuyMinMoney"]);
+        if (newval < SteamBuyMinMoney) continue;//必须大于最小收购单位
+        if (newval > SteamLimit)
+          continue;//看有没有空额 
+        snew = dvUser[i]["user"].ToString();
+        dvUser[i]["ordersbuyup"] = Convert.ToInt32(dvUser[i]["ordersbuyup"]) + 1;
+        break;
+      }
+      if (snew != "")
+      {
+        isuserchange = true;
+        sbuser = snew;
+        r["sbuser"] = sbuser;
+        return;
+      }
+      #endregion
+    }
+
+
+    /// <summary>
+    /// buff求购
+    /// </summary>
+    /// <param name="hashname"></param>
+    /// <param name="r"></param>
+    /// <param name="buyrmb"></param>
+    /// <param name="dtStore"></param>
+    /// <param name="dtusers"></param>
+    /// <param name="steamsell"></param>
+    /// <param name="steamselllv"></param>
+    /// <param name="bper"></param>
+    /// <param name="sper"></param>
+    /// <param name="winmoney"></param>
+    /// <param name="buffsell"></param>
+    /// <param name="max3month"></param>
+    /// <param name="bmax3month"></param>
+    /// <param name="buffid"></param>
+    private void AicenterBuffBuy(string hashname, DataRow r, double buyrmb, DataTable dtStore, DataTable dtusers
+     , double steamsell, double steamselllv, double bper, double sper, double winmoney
+        , double buffsell, double max3month, double bmax3month, string buffid, ref bool isuserchange)
+    {
+      #region 逻辑   
+      /*简版逻辑
+       * .如果当前能有最高求购价 以最高价 没有以BUFFBUY 
+.计算两个PER 如果不合适 取消求购
+.计算bbuser
+.当前有我的价格也有maxval 修改价格
+.没有 上架求购
+.客户端检测到bbuser不对 下架 并打出LOG 当前bbuser=谁 所以我下架求购
+       */
+
+      /*原逻辑
+          * 
+.STEAMsell和steamsell取低 如果为0 直接steambuy*1.4
+.重新计算sper
+.buffsell如果大于STEAMSELL*1.3 直接=1.3倍防失真
+.如果价格高于250美金不卖STEAM 停止收购(这里先取消)
+.如果利润不到设置值 或价格太低 停止收购
+.如果被压价 下架
+.如果按三月高区间和当前最高求购价算 利润率有否超过设置 如果BS利润率都不超过设置 取消求购
+.收购价 不得超过最后售出价的1.1倍
+.以当前最高收购价重新计算利润率 利润率必须大于设置值
+.如果亏损超过20%不收购了 这东西不做了
+.计算购买数量 并适当限制最大购买数量 如果库存为0 第一次只收一个试试
+.如果当前库存数>购买数量 不求购了
+.算出来购买数量
+.资金不够 不求购
+.最大购买价>buffsell直接=buffsell
+.最大购买价>STEAM售价不接受
+.求购
+           */
+      #endregion
+
+      #region 初始化变量处理            
+      DataView dvstore = new DataView(dtStore);
+      UpInfo up = GetUpInfo();
+      up.setPar(hashname);
+      DataTable dtbuffbuy = ApiHelper.api.GetDt("api7819/trade/trade_orderbuy/getByHashname", up);
+
+      int length = dvstore.Count;
+      double buffbuy = Convert.ToDouble(r["buffbuy"].ToString());
+      double steambuy = Convert.ToDouble(r["steambuy"].ToString());
+      int sellnum = Convert.ToInt32(r["sellnum"]);
+      int onsalenum = Convert.ToInt32(r["onsalenum"]);
+
+      double maxval = buffbuy / 100;
+      double dtmp, lastsell;
+      string bbuser = r["bbuser"].ToString();
+
+      #endregion
+
+      #region 先计算利润 没利润就只下架 不用上架了
+      if (isnotautoItem(hashname))
+      {
+        AicenterBbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      if (hashname.IndexOf("Sticker%20%7C%20") == 0 && winmoney < 0)
+      {
+        AicenterBbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      if (hashname.IndexOf("Sticker%20%7C%20") == 0 && steamsell >= 10000)
+      {
+        AicenterBbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      double winper = winmoney / (steamsell / 100 * usdsteam * 0.87) * 100;
+      if (winper < -20)
+      {
+        AicenterBbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      if (maxval == 0 && buffsell == 0)
+      {
+        AicenterBbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      #endregion
+
+      #region  数量计算
+      int buynum = SetBuynum + 1;
+      if (winper >= 0)
+        buynum = Convert.ToInt32(winper / 15) + SetBuynum + 1;// + 1;
+                                                              //大于500美金的 最少数-1 最多收2个
+      if (buffbuy >= 200000)
+      {
+        buynum--;
+        if (buynum > 2) buynum = 2;
+        //if (buynum < 1) buynum = 1;//下面有小于2即=2
+      }
+      //库存数几个减掉 如果够了就不收了 
+      if (buffbuy >= 25000 && buynum > 4)
+        buynum = 4;
+      if (buynum > 10) buynum = 10;
+      if (buynum < 2) buynum = 2;
+      if (hashname.IndexOf("Sticker%20%7C%20") == 0 && buynum >= 4)//印花最多只收5个
+        buynum = 4;
+      if (dtStore.Columns.Contains("hashname"))
+      {
+        dvstore.RowFilter = "hashname='" + hashname.Replace("'", "''") + "'";
+        if (dvstore.Count >= buynum)
+        {
+          AicenterBbuserEmpty(r, hashname, ref isuserchange);
+          return;
+        }
+        buynum -= dvstore.Count;
+      }
+      else//第一次收1个看看
+        buynum = 1;
+      //每次大于500的东西只收1个
+      //大于100的收2个
+      //大于50的收3个
+      //大于20的收4个
+      //最多收5个
+      if (maxval >= 400)
+      {
+        buynum = 1;
+      }
+      else
+      {
+        if (maxval >= 200)
+        {
+          if (buynum > 2) buynum = 2;
+        }
+        else if (maxval >= 125)
+        {
+          if (buynum > 3) buynum = 3;
+        }
+        else if (maxval >= 50)
+        {
+          if (buynum > 4) buynum = 4;
+        }
+        else
+        {
+          //如果>5个 最多收5个 
+          if (buynum > 5) buynum = 5;
+        }
+      }
+      #endregion
+
+      #region 计算最后卖出价的影响 
+      if (maxval == 0)
+        maxval = Math.Floor(buffsell / 2) / 100;
+      //sellmax和steamsell取低的
+      double sellmax = Convert.ToDouble(r["sellmax"]) * 100;
+      if (sellmax > steamsell && steamsell > 0)
+        sellmax = steamsell;
+      if (sellmax == 0)
+        sellmax = steambuy * 1.4;
+      //重新计算per
+      sper = (sellmax * 0.87 * usdsteam / 100 - maxval) / maxval * 100;
+      if (buffsell > sellmax * usdsteam * 0.87 * 1.3 && sellmax > 0 && sellmax < 1900)//防止价格失真
+        buffsell = sellmax * usdsteam * 0.87 * 1.3;
+      bper = (buffsell * 0.975 / 100 - maxval) / maxval * 100;
+      if ((sper < b2sper && bper < s2bper) || (sellnum == 0 && onsalenum == 0) || (steamsell < 20 && buffsell < 100))
+      {
+        AicenterBbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+
+      if (maxval >= buffsell / 100)//有可能超过BUFF卖价 没必要
+        maxval = buffsell / 100;
+      if (maxval >= steamsell * usdsteam / 100 && steamsell > 0)
+      {
+        AicenterBbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      //如果没有人收购
+      if (maxval == 0)
+      {
+        //如果收购价大于steam卖价的2分之一 直接取求购价
+        //否则 直接以2分之一的价格 防止1分钱这种
+        if (buffbuy > steamsell * usdsteam * 0.87 / 2)
+          maxval = buffbuy / 100;
+        else
+          maxval = steamsell * usdsteam * 0.87 / 2 / 100;
+      }
+      //重新收购
+      double lastmaxval = maxval;
+      if (buffsell / 100 < 50)
+      {
+        maxval += 0.1;
+        maxval = Math.Ceiling(maxval * 10) / 10;
+      }
+      else if (buffsell / 100 < 1000)
+      {
+        maxval += 1;
+        maxval = Math.Ceiling(maxval);
+      }
+      else
+      {
+        maxval += 10;
+        maxval = Math.Ceiling(maxval / 10) * 10;
+      }
+      if (max3month != 0)
+      {
+        dtmp = maxval * 100;
+        if ((bmax3month - dtmp) / dtmp * 100 < s2bper
+              && (max3month * usdsteam - dtmp) / dtmp * 100 < s2bper)
+        {
+          AicenterBbuserEmpty(r, hashname, ref isuserchange);
+          return;
+        }
+      }
+      lastsell = Convert.ToDouble(r["lastsell"].ToString()) * 1.1;
+      if (lastsell > 0 && maxval > lastsell)//收购价不超过最后出售过的价
+      {
+        AicenterBbuserEmpty(r, hashname, ref isuserchange);
+        return;
+      }
+      #endregion
+
+      #region 可以求购 判断改价还是求购
+      AicenterBuffBuyUp(buynum, dtStore, dtusers, r, maxval, dtbuffbuy, lastmaxval, ref isuserchange);
+      #endregion
+    }
+
+    private void AicenterBuffBuyUp(int buynum, DataTable dtStore, DataTable dtusers, DataRow r, double newval, DataTable dtbuffbuy, double maxval, ref bool isuserchange)
+    {
+
+      #region 先处理第一次bbuser=空
+      string bbuser = r["bbuser"].ToString();
+      if (bbuser == "" && dtbuffbuy.Rows.Count >= 1)
+      {
+        SetBbuser(false, buynum, newval, dtusers, dtStore, dtbuffbuy, r, ref bbuser, ref isuserchange);
+        bbuser = r["bbuser"].ToString();
+        if (bbuser == "") //没有额度了
+          return;
+      }
+      #endregion
+
+      #region 如果有在上架价格OK
+      string hashname = r["hashname"].ToString();
+
+      string buffid = r["buffid"].ToString();
+      DataView dvbuffbuy = new DataView(dtbuffbuy);
+      if (dtbuffbuy.Rows.Count >= 1 && bbuser != "")
+        dvbuffbuy.RowFilter = "suser='" + bbuser + "'";
+      DataView dvUser = new DataView(dtusers);
+      int length = dvbuffbuy.Count;
+      double myval;
+      string tmp;
+      UpInfo up;
+      for (int i = 0; i < length; i++)
+      {
+        myval = Convert.ToDouble(dvbuffbuy[i]["myval"]);
+        if (myval == maxval) return;
+        string orderid = dvbuffbuy[i]["orderid"].ToString();
+        //如果这个号安排的有点多 直接下架 重新安排bbuser               
+        dvUser.RowFilter = "`user`='" + bbuser + "'";
+        int buffbuynum = Convert.ToInt32(dvUser[0]["buffbuynum"]);
+        if (buffbuynum >= maxbuffbuynum * 0.9)
+        {
+          double BuffBuyMinMoney = Convert.ToDouble(dvUser[0]["BuffBuyMinMoney"]);
+          if (newval < BuffBuyMinMoney)
+          {
+            // 重新安排bbuser即可(会自动下架)
+            //SetBbuser(true, buynum, newval, dtusers, dtStore, dtbuffbuy,r, ref bbuser, ref isuserchange);
+            break;
+          }
+          //return;
+        }
+
+        //改价
+        up = GetUpInfo();
+        up.setPar(bbuser, hashname, "bbuyChange", myval + " change " + newval.ToString());
+        tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+        up = new UpInfo();
+        up.setPar(bbuser, "bbuyChange", hashname, ""
+            , newval.ToString(), orderid, buffid
+            , buynum.ToString(), "", "0");
+        tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+        //return;
+      }
+      #endregion
+
+      #region 上架求购
+      SetBbuser(true, buynum, newval, dtusers, dtStore, dtbuffbuy, r, ref bbuser, ref isuserchange);
+      if (bbuser == "") return;
+
+      up = GetUpInfo();
+      up.setPar(bbuser, hashname, "bbuyup", newval.ToString() + " s:" + r["steamsell"].ToString() + " b:" + r["buffsell"].ToString());
+      tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+      up = new UpInfo();
+      up.setPar(bbuser, "bbuyup", hashname, ""
+          , newval.ToString(), buynum.ToString(), buffid
+          , "", "", (newval * buynum).ToString());
+      tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+      return;
+      #endregion
+    }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="_isClear"></param>
+    private void SetBbuser(bool _isClear, int buynum, double newval, DataTable dtusers, DataTable dtStore, DataTable dtbuffbuy, DataRow r, ref string bbuser, ref bool isuserchange)
+    {
+      string bbuserNouse = "";//
+      if (_isClear && bbuser != "")//先清除原来的bbuser
+      {
+        bbuserNouse = bbuser;
+        bbuser = "";
+        isuserchange = true;
+        r["bbuser"] = "";
+      }
+
+      string snew = "", tmp;
+
+
+
+      #region 如果仓库里有这个东西 且有空额 优先安排         
+      DataView dvUser = new DataView(dtusers);
+      DataView dvStore = new DataView(dtStore);
+      if (dtStore.Rows.Count >= 1)
+        dvStore.RowFilter = "suser<>'" + bbuserNouse + "'";
+      int length = dvStore.Count;
+      if (length >= 1)
+      {
+        //如果这个号是BUFF的号 且有空额优先安排 (不管有没有其它号在求购 其它号下架求购)
+        for (int i = 0; i < length; i++)
+        {
+          tmp = dvStore[i]["suser"].ToString();
+          dvUser.RowFilter = "`user`='" + tmp + "'";
+          //如果这个号不是BUFF的号
+          if (dvUser[0]["cookiebuff"].ToString().Trim() == "") continue;
+          double buffmaxmoney = Convert.ToDouble(dvUser[0]["buffmoney"]);
+          if (buffmaxmoney < Convert.ToDouble(dvUser[0]["buffcardmoney"]))
+            buffmaxmoney = Convert.ToDouble(dvUser[0]["buffcardmoney"]);
+          //看新价格有否超出buff钱数
+          if (newval > buffmaxmoney) continue;
+
+          double buffLimit = Convert.ToDouble(dvUser[0]["BuffLimit"]);
+          double BuffBuyMinMoney = Convert.ToDouble(dvUser[0]["BuffBuyMinMoney"]);
+          if (newval < BuffBuyMinMoney) continue;//必须大于最小收购单位
+          if (newval > buffLimit) continue;//看有没有空额 
+          snew = tmp;
+          dvUser[0]["BuffLimit"] = Convert.ToDouble(dvUser[0]["BuffLimit"])
+              - newval * buynum;
+          dvUser[0]["orderbbuyup"] = Convert.ToInt32(dvUser[0]["orderbbuyup"]) + 1;
+          break;
+        }
+        if (snew != "")
+        {
+          isuserchange = true;
+          //snew = dvStore[0]["suser"].ToString();
+          bbuser = snew;
+          r["bbuser"] = bbuser;
+          return;
+        }
+      }
+      #endregion
+
+      #region 如果求购里面有 直接可以返回了
+      if (!_isClear)
+      {
+        if (dtbuffbuy.Rows.Count >= 1)
+        {
+          bbuser = dtbuffbuy.Rows[0]["suser"].ToString();
+          isuserchange = true;
+          r["bbuser"] = bbuser;
+          return;
+        }
+        //DataView dvbuy = new DataView(dtbuffbuy);
+        //dvbuy.RowFilter = "suser='" + bbuser + "'";
+        //if (dvbuy.Count >= 1) return;
+      }
+      #endregion
+
+      #region 根据余下的额度顺序安排
+      dvUser.RowFilter = "orderbbuyup<5";
+      dvUser.Sort = "BuffLimit desc";
+      length = dvUser.Count;
+      string gameid = r["gameid"].ToString();
+      int index;
+      for (int i = 0; i < length; i++)
+      {
+        if (gameid != "730")//730所有号都可以搞 且优先(看怎么个优先法)
+        {
+          index = dvUser[i]["gameid"].ToString().IndexOf(gameid + "~");
+          if (index == -1) continue;
+        }
+        if (dvUser[i]["cookiebuff"].ToString().Trim() == "") continue;
+        double buffmaxmoney = Convert.ToDouble(dvUser[i]["buffmoney"]);
+        if (buffmaxmoney < Convert.ToDouble(dvUser[i]["buffcardmoney"]))
+          buffmaxmoney = Convert.ToDouble(dvUser[i]["buffcardmoney"]);
+        //看新价格有否超出buff钱数
+        if (newval > buffmaxmoney) continue;
+        double buffLimit = Convert.ToDouble(dvUser[i]["BuffLimit"]);
+        double BuffBuyMinMoney = Convert.ToDouble(dvUser[i]["BuffBuyMinMoney"]);
+        if (newval < BuffBuyMinMoney) continue;//必须大于最小收购单位
+        if (newval > buffLimit) continue;//看有没有空额 
+        snew = dvUser[i]["user"].ToString();
+        dvUser[i]["orderbbuyup"] = Convert.ToInt32(dvUser[i]["orderbbuyup"]) + 1;
+        break;
+      }
+      if (snew != "")
+      {
+        isuserchange = true;
+        bbuser = snew;
+        r["bbuser"] = bbuser;
+        return;
+      }
+      #endregion
+    }
+
+    /// <summary>
+    /// 没有求购条件 只要设置BB 客户端去下架
+    /// </summary>
+    /// <param name="hashname"></param>
+    private void AicenterBbuserEmpty(DataRow r, string hashname, ref bool isuserchange)
+    {
+      string bbuser = r["bbuser"].ToString();
+      if (bbuser == "") return;
+      //设置BbUSER=空 然后扫描求购时发现不是我处理这东西的 就下架求购
+      r["bbuser"] = "";
+      isuserchange = true;
+      UpInfo up = GetUpInfo();
+      up.setPar(bbuser, hashname, "bbuser", bbuser + " changeto empty");
+      string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+    }
+
+
+
+
+
+    private void AiOrderDoingBup(string suser, string hashname
+  , double sellprice, string assid, string par3, string logtext = "")
+    {
+      UpInfo up = GetUpInfo();
+      up.setPar(suser, hashname, "Bup", sellprice.ToString() + logtext);
+      string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+      up = new UpInfo();
+      up.setPar(suser, "Bup", hashname, "", assid, sellprice.ToString(), par3);
+      tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+    }
+
+
+    private void SetBsuser(string bsuser, DataTable dtusers, DataRow r, DataTable dtStore, string hashname, ref bool isuserchange)
+    {
+      DataView dvuser = new DataView(dtusers);
+      DataView dvstore = new DataView(dtStore);
+      string snew = "", tmp;
+      UpInfo up;
+      if (bsuser != "")//状态为3且库存还在保持原样
+      {
+        dvstore.RowFilter = "state=3 and suser='" + bsuser + "'";
+        if (dvstore.Count >= 1)
+        {
+          dvuser.RowFilter = "user='" + bsuser + "'";
+          if (dvuser[0]["cookiebuff"].ToString() != "")
+            snew = bsuser;
+        }
+
+      }
+      if (snew == "")//否则随便弄个能卖BUFF的
+      {
+        dvstore.RowFilter = "state=3   ";
+        if (dvstore.Count >= 1)
+        {
+          for (int i = 0; i < dvstore.Count; i++)
+          {
+            tmp = dvstore[0]["suser"].ToString();
+            dvuser.RowFilter = "user='" + tmp + "'";
+            if (dvuser[0]["kind"].ToString() == "buff")
+            {
+              snew = tmp;
+              break;
+            }
+
+          }
+        }
+
+      }
+      if (snew == "" && bsuser != "")
+      {
+        dvstore.RowFilter = "suser='" + bsuser + "'";
+        if (dvstore.Count >= 1)
+        {
+          dvuser.RowFilter = "user='" + bsuser + "'";
+          if (dvuser[0]["kind"].ToString() == "buff")
+            snew = bsuser;
+        }
+
+      }
+      if (snew == "")
+      {
+        dvstore.RowFilter = "";
+        for (int i = 0; i < dvstore.Count; i++)
+        {
+          dvuser.RowFilter = "user='" + dvstore[i]["suser"].ToString() + "'";
+          if (dvuser[0]["kind"].ToString() == "buff")
+          {
+            snew = dvstore[i]["suser"].ToString();
+            break;
+          }
+        }
+
+      }
+      if (bsuser != snew)
+      {
+        isuserchange = true;
+        if (bsuser != "")
+        {
+          up = GetUpInfo();
+          up.setPar(snew, hashname, "bsuser", bsuser + " changeto " + snew);
+          tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+        }
+        r["bsuser"] = snew;
+      }
+
+    }
+
+
+
+
+
+
+
+    private void TranToBuff(string hashname, DataTable dtusers, double steamsell, double steamselllv, string steamorder, ref string tranuserB, string state, string suser, string assetid)
+    {
+      if (steamorder != "")
+      {
+        aiorder.AiOrderDoingSdown(suser, hashname, steamorder, " TranToBuff lv:" + steamselllv);
+        return;
+      }
+      if (state != "3") return;
+      //找到buff这边价值最少的号
+      DataView dvuser2 = new DataView(dtusers);
+      if (tranuserB == "")
+      {
+        dvuser2.RowFilter = "kind='buff'";
+        dvuser2.Sort = "TotolMoney";
+        tranuserB = dvuser2[0]["user"].ToString();
+      }
+      dvuser2.RowFilter = "user='" + tranuserB + "'";
+      string othersteamid = dvuser2[0]["steamid"].ToString();
+      //安排转货
+      UpInfo up = GetUpInfo();
+      up.setPar(suser, hashname, "tran2", "TO B:" + tranuserB + " " + steamsell.ToString() + " " + assetid);
+      string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+      up = new UpInfo();
+      up.setPar(suser, "tran2", hashname, tranuserB, assetid, othersteamid, ""
+      , "", "", (steamsell / 100 * usdsteam).ToString());
+      tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+    }
+
+    /// <summary>
+    /// 转到STEAM
+    /// </summary>
+    /// <param name="hashname"></param>
+    /// <param name="dtusers"></param>
+    /// <param name="steamselllv"></param>
+    /// <param name="steamorder"></param>
+    /// <param name="tranuser"></param>
+    /// <param name="suser"></param>
+    public void TranToSteam(string gameid, string hashname, DataTable dtusers, double steamsell, double steamselllv, string steamorder, ref string tranuserS, string suser, string state, string assetid)
+    {
+      if (state != "3") return;
+      if (steamorder != "")
+      {
+        aiorder.AiOrderDoingSdown(suser, hashname, steamorder, " itemchange sper>bper && steamsell >= 25000) lv:" + steamselllv);
+        return;
+      }
+      int index;
+      //先找库存中有的符合KIND=steam的
+      //找到一个STEAM这边价值最少的号
+      DataView dvuser2 = new DataView(dtusers);
+      if (tranuserS == "")
+      {
+        dvuser2.RowFilter = "kind='steam'";
+        dvuser2.Sort = "TotolMoney";
+        for (int i = 0; i < dvuser2.Count; i++)
+        {
+          if (gameid != "730")//730所有号都可以搞 且优先(看怎么个优先法)
+          {
+            index = dvuser2[i]["gameid"].ToString().IndexOf("~" + gameid + "~");
+            if (index == -1) continue;
+          }
+          tranuserS = dvuser2[i]["user"].ToString();
+          break;
+        }
+
+      }
+      dvuser2.RowFilter = "user='" + tranuserS + "'";
+      string othersteamid = dvuser2[0]["steamid"].ToString();
+      //安排转货
+      UpInfo up = GetUpInfo();
+      up.setPar(suser, hashname, "tran2", "TO s:" + tranuserS + " " + steamsell.ToString() + " " + assetid);
+      string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+      up = new UpInfo();
+      up.setPar(suser, "tran2", hashname, tranuserS, assetid, othersteamid, ""
+      , "", "", (steamsell / 100 * usdsteam).ToString());
+      tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+    }
+
+
+
+
+
+
+
+
+
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="ssuser"></param>
+    /// <param name="r"></param>
+    /// <param name="dtStore"></param>
+    /// <param name="hashname"></param>
+    /// <param name="isuserchange"></param>
+    private void SetSsuser(string ssuser, DataRow r, DataTable dtStore, string hashname, ref bool isuserchange)
+    {
+      DataView dvstore = new DataView(dtStore);
+      string snew = "";
+      //IF STATA=1且本来就是它            
+      if (ssuser != "")
+      {
+        dvstore.RowFilter = "state=1 and suser='" + ssuser + "'";
+        if (dvstore.Count >= 1)
+        {
+          snew = ssuser;
+        }
+        if (snew == "")
+        {
+          dvstore.RowFilter = "suser='" + ssuser + "'";
+          if (dvstore.Count >= 1)
+            snew = ssuser;
+        }
+      }
+
+      if (snew == "")
+      {
+        dvstore.RowFilter = "state=1 ";
+        //只卖STEAM 暂时不搞 要转货
+        //dvuser.RowFilter = "user='" + ssuser + "'";
+        //if (dvuser[0]["cookiebuff"].ToString()=="")
+        if (dvstore.Count >= 1)
+          snew = dvstore[0]["suser"].ToString();
+      }
+      string bsuser = r["bsuser"].ToString();
+      if (snew == "" || snew == bsuser)//尽量搞不一样的
+      {
+        dvstore.RowFilter = "suser<>'" + bsuser + "'";
+        if (dvstore.Count >= 1)
+          snew = dvstore[0]["suser"].ToString();
+      }
+      if (snew == "")
+      {
+        dvstore.RowFilter = "";
+        if (dvstore.Count >= 1)
+          snew = dvstore[0]["suser"].ToString();
+      }
+
+      if (ssuser != snew)
+      {
+        isuserchange = true;
+        if (ssuser != "")
+        {
+          UpInfo up = GetUpInfo();
+          up.setPar(snew, hashname, "ssuser", ssuser + " changeto " + snew);
+          string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+        }
+        r["ssuser"] = snew;
+      }
+
+    }
+
+
+
+    private string GetHashname()
+    {
+      UpInfo up = GetUpInfo();
+      string hashname = rpg.s7.Get("Aicenterhashname");
+    if (hashname.IndexOf("err78") == 0) hashname = "";
+    if (hashname == "")
+      {
+        up = GetUpInfo();
+        up.setPar(rpg.steamuser);
+        hashname = ApiHelper.api.GetStr("api7819/tscan/tscan_basic/getAicenterOne", up);
+        if (hashname == "")
+        {
+          addLog("扫描队列为空", "getAicenterOne", 90, "", rpg.steamuser);
+          return hashname;
+        }
+        rpg.s7.Set("Aicenterhashname", hashname);
+      }
+      //string hashname = "StatTrak%E2%84%A2%20Dual%20Berettas%20%7C%20Elite%201.6%20%28Well-Worn%29";
+      if (isnotautoItem(hashname))
+        return "next";
+      return hashname;
+    }
+
+    private DataTable GetUsers()
+    {
+      UpInfo up = GetUpInfo();
+      DataTable dtusers = ApiHelper.api.GetDt("api7819/trade/trade_buffuser/getForAicenter", up);
+      dtusers.Columns.Add("BuffBuyMinMoney", typeof(double));//最小金额 因为一个号只能搞90种
+      dtusers.Columns.Add("BuffLimit", typeof(double));//剩余额度 先安排额度多的号 buff金额*5-求购总额
+      dtusers.Columns.Add("BuffMoneysum", typeof(double));//BUFF现金总额
+      dtusers.Columns.Add("SteamLimit", typeof(double));//剩余额度 先安排额度多的号 steam金额*10-求购总额
+      dtusers.Columns.Add("SteamBuyMinMoney", typeof(double));//最小金额 因为一个号只能搞200种
+      dtusers.Columns.Add("TotolMoney", typeof(double));//总金额 因为一个号只能搞200种
+
+      DataView dvuser = new DataView(dtusers);
+
+      for (int i = 0; i < dtusers.Rows.Count; i++)
+      {
+        DataRow ruser = dtusers.Rows[i];
+
+        #region 计算steam求购相关数据
+        if (ruser["ordersbuyup"].ToString() == "")//buff求购已安排 一次最多安排5个
+          ruser["ordersbuyup"] = 0;
+        if (ruser["steambuynum"].ToString() == "")
+        {
+          ruser["steambuynum"] = 0;
+          ruser["steambuysum"] = 0;
+        }
+        double steamMoney = Convert.ToDouble(ruser["steammoney"]);
+        double steambuysum = Convert.ToDouble(ruser["steambuysum"]);
+        int steambuynum = Convert.ToInt32(ruser["steambuynum"]);
+        ruser["SteamLimit"] = steamMoney * 10 - steambuysum;
+        if (steambuynum >= maxSteamBuynum)
+          ruser["SteamBuyMinMoney"] = steamMoney * 0.09;
+        else if (steambuynum >= maxSteamBuynum / 2)
+          ruser["SteamBuyMinMoney"] = steamMoney * 0.01;
+        else ruser["SteamBuyMinMoney"] = 0.01;
+        #endregion
+
+        #region 计算BUFF求购相关数据
+        if (ruser["transum"].ToString() == "") ruser["transum"] = 0;
+
+        if (ruser["cookiebuff"].ToString() == "")
+        {
+          // 计算总金额 选个小的 用于转货
+          ruser["TotolMoney"] = steamMoney * usdsteam
+              + Convert.ToDouble(ruser["storesell"]) * usdsteam
+              + Convert.ToDouble(ruser["transum"]) * usdsteam;
+          continue;
+        }
+        if (ruser["orderbbuyup"].ToString() == "")//buff求购已安排 一次最多安排5个
+          ruser["orderbbuyup"] = 0;
+        if (ruser["buffbuysum"].ToString() == "")
+        {
+          ruser["buffbuynum"] = 0;
+          ruser["buffbuysum"] = 0;
+        }
+
+        double buffbuysum = Convert.ToDouble(ruser["buffbuysum"]);
+        //double buffmoney = Convert.ToDouble(ruser["buffmoney"]);
+        double buffcardmoney = Convert.ToDouble(ruser["buffcardmoney"]);
+        double BuffMoneysum = buffcardmoney;// + buffmoney;//buff总余额
+        ruser["BuffMoneysum"] = BuffMoneysum;
+        double buffmaxmoney = buffcardmoney;
+        //一次只能用一个平台的钱
+        //if (buffmaxmoney <= buffmoney) buffmaxmoney = buffmoney;
+
+
+        int buffbuynum = Convert.ToInt32(ruser["buffbuynum"]);
+        ruser["BuffLimit"] = BuffMoneysum * 10 - buffbuysum;
+        if (buffbuynum >= maxbuffbuynum)
+          ruser["BuffBuyMinMoney"] = buffmaxmoney * 0.09;
+        else if (buffbuynum >= maxbuffbuynum / 2)
+          ruser["BuffBuyMinMoney"] = buffmaxmoney * 0.01;
+        else
+        {
+          ruser["BuffBuyMinMoney"] = 0.01;
+        }
+        #endregion
+
+        // 计算总金额 选个小的 用于转货
+        ruser["TotolMoney"] = BuffMoneysum + steamMoney * usdsteam
+            + Convert.ToDouble(ruser["storesell"]) * usdsteam
+            + Convert.ToDouble(ruser["transum"]) * usdsteam;
+
+      }
+
+      return dtusers;
+    }
+  }
+
+
+}

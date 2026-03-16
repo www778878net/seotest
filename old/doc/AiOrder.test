@@ -1,0 +1,66 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace zhaomin
+{
+    /// <summary>
+    /// 添加命令
+    /// </summary>
+    public class AiOrder
+    {
+        public AiCenter aicenter { get; set; }
+        public void AiOrderDoingSupchange(string gameid, string suser, string hashname
+          , double sellprice, string steamorder, string logtext = "")
+        {
+            UpInfo up = new UpInfo();
+            up.setPar(suser, hashname, "supchange", sellprice.ToString() + " " + Math.Floor(sellprice / 0.87).ToString() + " " + logtext);
+            string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+            up = new UpInfo();
+            up.setPar(suser, "supchange", hashname, "", steamorder, sellprice.ToString(), gameid);
+            tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+        }
+        public   void AiOrderDoingSup(string gameid, string suser, string hashname
+            , double sellprice, string assid, string logtext = "")
+        {
+            UpInfo up = new UpInfo();
+            up.setPar(suser, hashname, "Sup", sellprice.ToString()+" " + Math.Floor(sellprice/0.87).ToString()+" " + logtext);
+            string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+            up = new UpInfo();
+            up.setPar(suser, "Sup", hashname, "", assid, sellprice.ToString(),gameid);
+            tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+        }
+
+        /// <summary>
+        /// steam下架
+        /// </summary>
+        /// <param name="suser"></param>
+        /// <param name=""></param>
+        public void AiOrderDoingSdown(string suser, string hashname, string steamorder, string loginfo)
+        {
+            if (steamorder == "wait") return;
+            UpInfo up = new UpInfo();
+            up.setPar(suser, hashname, "sdown", steamorder + loginfo);
+            string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+            up = new UpInfo();
+            up.setPar(suser, "sdown", hashname, "", steamorder);
+            tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+        }
+
+        public void AiOrderDoingBdown(string suser, string hashname, string orderid, string loginfo)
+        {
+            UpInfo up = new UpInfo();
+            up.setPar(suser, hashname, "bdown", orderid + loginfo);
+            string tmp = ApiHelper.api.GetStr("api7819/trade/trade_log/mAdd", up);
+
+            up = new UpInfo();
+            up.setPar(suser, "bdown", hashname, "", orderid);
+            tmp = ApiHelper.api.GetStr("api7819/trade/trade_order/mAdd", up);
+        }
+    }
+}
