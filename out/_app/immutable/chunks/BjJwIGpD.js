@@ -1,0 +1,1 @@
+import{f as y,g as _,Z as u,_ as g,h as t,C as o,Y as i,p as l,i as d,q as p,j as m}from"./BqAsivAr.js";function C(n,r){let s=null,f=t;var a;if(t){s=p;for(var e=m(document.head);e!==null&&(e.nodeType!==o||e.data!==n);)e=i(e);if(e===null)l(!1);else{var E=i(e);e.remove(),d(E)}}t||(a=document.head.appendChild(y()));try{_(()=>r(a),u|g)}finally{f&&(l(!0),d(s))}}export{C as h};

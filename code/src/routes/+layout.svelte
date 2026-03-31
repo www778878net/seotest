@@ -2,8 +2,12 @@
   import "../app.css";
   import Icon from "@iconify/svelte";
   import mainLogo from "$lib/img/logo.png";
+  import { page } from "$app/state";
 
   let { children } = $props();
+  let isSales = $derived(
+    page.url.pathname === "/sales" || page.url.pathname.startsWith("/sales/"),
+  );
   let showContact = $state(false);
   let showMobileNav = $state(false);
 
@@ -20,6 +24,9 @@
   }
 </script>
 
+{#if isSales}
+  {@render children()}
+{:else}
 <div
   class="min-h-screen flex flex-col bg-[#050509] text-white font-sans selection:bg-blue-500/40"
 >
@@ -65,6 +72,11 @@
           href="#ai"
           class="text-[13px] font-medium text-gray-300 hover:text-white transition-colors no-underline"
           >智能营销</a
+        >
+        <a
+          href="/sales"
+          class="text-[13px] font-medium text-gray-300 hover:text-white transition-colors no-underline"
+          >AI营销</a
         >
         <a
           href="#tech"
@@ -199,6 +211,12 @@
           >智能营销</a
         >
         <a
+          href="/sales"
+          class="text-gray-100 hover:text-white"
+          onclick={() => (showMobileNav = false)}
+          >AI营销</a
+        >
+        <a
           href="#tech"
           class="text-gray-100 hover:text-white"
           onclick={() => (showMobileNav = false)}
@@ -262,3 +280,4 @@
     </div>
   </footer>
 </div>
+{/if}
